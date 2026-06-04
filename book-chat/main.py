@@ -5,8 +5,7 @@ from typing import Optional
 
 import fitz  # PyMuPDF
 import chromadb
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,8 +20,8 @@ app = FastAPI(title="Book Chat")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 chroma = chromadb.PersistentClient(path=str(DB_DIR))
-gemini = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
-GEMINI_MODEL = "gemini-2.0-flash"
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
+GEMINI_MODEL = "gemini-1.5-flash"
 
 sessions: dict[str, list[dict]] = {}
 books: dict[str, dict] = {}
@@ -153,7 +152,8 @@ async def chat(req: ChatRequest):
             "章立て・主要な主張・結論を含めてください。\n\n"
             f"本文:\n{full_text}\n\n要約してください。"
         )
-        response = gemini.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        response = model.generate_content(prompt)
         return {"reply": response.text, "mode": "summary"}
 
     if req.mode == "author":
@@ -172,15 +172,14 @@ async def chat(req: ChatRequest):
         )
 
     history = sessions.setdefault(req.session_id, [])
-    history.append({"role": "user", "parts": [{"text": req.message}]})
 
-    response = gemini.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=history,
-        config=types.GenerateContentConfig(system_instruction=system, max_output_tokens=1024),
-    )
+    model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system)
+    chat_session = model.start_chat(history=history)
+    response = chat_session.send_message(req.message)
     reply = response.text
-    history.append({"role": "model", "parts": [{"text": reply}]})
+
+    history.clear()
+    history.extend(chat_session.history)
 
     if len(history) > 40:
         sessions[req.session_id] = history[-40:]
