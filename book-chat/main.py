@@ -20,7 +20,7 @@ DB_DIR.mkdir(exist_ok=True)
 app = FastAPI(title="Book Chat")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
-chroma = chromadb.PersistentClient(path=str(DB_DIR))
+chroma = chromadb.EphemeralClient()
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 GEMINI_MODEL = "gemini-1.5-flash"
 
