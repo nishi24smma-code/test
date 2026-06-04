@@ -1,42 +1,41 @@
 import os
 import uuid
+import math
+import re
 from pathlib import Path
 from typing import Optional
+from collections import defaultdict
 
 import fitz  # PyMuPDF
-import chromadb
 import google.generativeai as genai
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
-DB_DIR = BASE_DIR / "db"
 UPLOAD_DIR.mkdir(exist_ok=True)
-DB_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="Book Chat")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
-chroma = chromadb.EphemeralClient()
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 GEMINI_MODEL = "gemini-1.5-flash"
 
 sessions: dict[str, list[dict]] = {}
 books: dict[str, dict] = {}
+# book_id -> list of {"text": str, "page": int}
+book_chunks: dict[str, list[dict]] = {}
 
 
 def extract_text_chunks(pdf_path: Path) -> list[dict]:
-    """Extract text from PDF, split into chunks with page info."""
     doc = fitz.open(str(pdf_path))
     chunks = []
     for page_num, page in enumerate(doc):
         text = page.get_text()
         if not text.strip():
             continue
-        # split into ~500 char chunks
         for i in range(0, len(text), 500):
             chunk = text[i:i + 500].strip()
             if chunk:
@@ -44,43 +43,35 @@ def extract_text_chunks(pdf_path: Path) -> list[dict]:
     return chunks
 
 
-def ingest_book(book_id: str, pdf_path: Path) -> dict:
-    """Extract and store book content in ChromaDB."""
-    chunks = extract_text_chunks(pdf_path)
-    if not chunks:
-        raise ValueError("PDFからテキストを抽出できませんでした")
-
-    collection = chroma.get_or_create_collection(f"book_{book_id}")
-    collection.add(
-        documents=[c["text"] for c in chunks],
-        ids=[f"{book_id}_chunk_{i}" for i in range(len(chunks))],
-        metadatas=[{"page": c["page"]} for c in chunks],
-    )
-    # infer page count
-    doc = fitz.open(str(pdf_path))
-    return {"chunks": len(chunks), "pages": len(doc)}
+def tokenize(text: str) -> list[str]:
+    return re.findall(r'\w+', text.lower())
 
 
 def retrieve_context(book_id: str, query: str, n: int = 5) -> str:
-    """RAG: retrieve relevant passages for a query."""
-    try:
-        collection = chroma.get_collection(f"book_{book_id}")
-        results = collection.query(query_texts=[query], n_results=min(n, collection.count()))
-        passages = results["documents"][0]
-        pages = [m["page"] for m in results["metadatas"][0]]
-        parts = [f"[p.{p}] {t}" for t, p in zip(passages, pages)]
-        return "\n\n".join(parts)
-    except Exception:
+    chunks = book_chunks.get(book_id, [])
+    if not chunks:
         return ""
+    query_tokens = set(tokenize(query))
+    scores = []
+    for chunk in chunks:
+        chunk_tokens = tokenize(chunk["text"])
+        token_freq: dict[str, int] = defaultdict(int)
+        for t in chunk_tokens:
+            token_freq[t] += 1
+        score = sum(token_freq.get(t, 0) for t in query_tokens)
+        scores.append(score)
+    top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n]
+    parts = [f"[p.{chunks[i]['page']}] {chunks[i]['text']}" for i in top_indices if scores[i] > 0]
+    return "\n\n".join(parts) if parts else "\n\n".join(
+        chunks[i]["text"] for i in top_indices[:3]
+    )
 
-
-# ── API models ──────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
     session_id: str
     book_id: str
     message: str
-    mode: str = "discuss"  # "discuss" | "author" | "summary"
+    mode: str = "discuss"
 
 
 class BookMeta(BaseModel):
@@ -88,8 +79,6 @@ class BookMeta(BaseModel):
     title: str
     author_hint: Optional[str] = ""
 
-
-# ── Routes ──────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -100,21 +89,22 @@ async def root():
 async def upload_pdf(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "PDFファイルのみ対応しています")
-
     book_id = uuid.uuid4().hex[:8]
     save_path = UPLOAD_DIR / f"{book_id}.pdf"
     save_path.write_bytes(await file.read())
-
     try:
-        info = ingest_book(book_id, save_path)
+        chunks = extract_text_chunks(save_path)
+        if not chunks:
+            raise ValueError("PDFからテキストを抽出できませんでした")
+        book_chunks[book_id] = chunks
+        doc = fitz.open(str(save_path))
+        pages = len(doc)
     except Exception as e:
         save_path.unlink(missing_ok=True)
         raise HTTPException(500, str(e))
-
     title = Path(file.filename).stem
-    books[book_id] = {"title": title, "author_hint": "", "pages": info["pages"]}
-
-    return {"book_id": book_id, "title": title, "pages": info["pages"], "chunks": info["chunks"]}
+    books[book_id] = {"title": title, "author_hint": "", "pages": pages}
+    return {"book_id": book_id, "title": title, "pages": pages, "chunks": len(chunks)}
 
 
 @app.post("/meta")
@@ -135,18 +125,12 @@ async def list_books():
 async def chat(req: ChatRequest):
     if req.book_id not in books:
         raise HTTPException(404, "書籍が見つかりません")
-
     meta = books[req.book_id]
     context = retrieve_context(req.book_id, req.message)
 
     if req.mode == "summary":
-        try:
-            col = chroma.get_collection(f"book_{req.book_id}")
-            all_docs = col.get()["documents"]
-            full_text = " ".join(all_docs)[:8000]
-        except Exception:
-            full_text = context
-
+        chunks = book_chunks.get(req.book_id, [])
+        full_text = " ".join(c["text"] for c in chunks)[:8000]
         prompt = (
             f"あなたは『{meta['title']}』の読書アシスタントです。"
             "以下の本文を踏まえて日本語で詳しく要約してください。"
@@ -173,18 +157,14 @@ async def chat(req: ChatRequest):
         )
 
     history = sessions.setdefault(req.session_id, [])
-
     model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system)
     chat_session = model.start_chat(history=history)
     response = chat_session.send_message(req.message)
     reply = response.text
-
     history.clear()
     history.extend(chat_session.history)
-
     if len(history) > 40:
         sessions[req.session_id] = history[-40:]
-
     return {"reply": reply, "mode": req.mode}
 
 
