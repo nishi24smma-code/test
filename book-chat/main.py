@@ -5,7 +5,8 @@ from typing import Optional
 
 import fitz  # PyMuPDF
 import chromadb
-from anthropic import Anthropic
+from google import genai
+from google.genai import types
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,11 +21,10 @@ app = FastAPI(title="Book Chat")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 chroma = chromadb.PersistentClient(path=str(DB_DIR))
-anthropic = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+gemini = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+GEMINI_MODEL = "gemini-2.0-flash"
 
-# conversation history per session: session_id -> list of messages
 sessions: dict[str, list[dict]] = {}
-# book metadata: book_id -> {"title": str, "author_hint": str, "pages": int}
 books: dict[str, dict] = {}
 
 
@@ -140,7 +140,6 @@ async def chat(req: ChatRequest):
     context = retrieve_context(req.book_id, req.message)
 
     if req.mode == "summary":
-        # one-shot summary of full book (use first 4000 chars)
         try:
             col = chroma.get_collection(f"book_{req.book_id}")
             all_docs = col.get()["documents"]
@@ -148,20 +147,15 @@ async def chat(req: ChatRequest):
         except Exception:
             full_text = context
 
-        system = (
+        prompt = (
             f"あなたは『{meta['title']}』の読書アシスタントです。"
             "以下の本文を踏まえて日本語で詳しく要約してください。"
-            "章立て・主要な主張・結論を含めてください。"
+            "章立て・主要な主張・結論を含めてください。\n\n"
+            f"本文:\n{full_text}\n\n要約してください。"
         )
-        response = anthropic.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            system=system,
-            messages=[{"role": "user", "content": f"本文:\n{full_text}\n\n要約してください。"}],
-        )
-        return {"reply": response.content[0].text, "mode": "summary"}
+        response = gemini.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        return {"reply": response.text, "mode": "summary"}
 
-    # build system prompt based on mode
     if req.mode == "author":
         author_part = f"（著者名のヒント: {meta['author_hint']}）" if meta["author_hint"] else ""
         system = (
@@ -170,7 +164,7 @@ async def chat(req: ChatRequest):
             "本書に書かれていないことは「本書では触れていませんが…」と断ったうえで答えてください。"
             f"\n\n【本書の関連箇所】\n{context}"
         )
-    else:  # discuss
+    else:
         system = (
             f"あなたは『{meta['title']}』の内容に精通した読書アシスタントです。"
             "日本語で丁寧に、本書の内容を根拠にしながら議論・質問に答えてください。"
@@ -178,18 +172,16 @@ async def chat(req: ChatRequest):
         )
 
     history = sessions.setdefault(req.session_id, [])
-    history.append({"role": "user", "content": req.message})
+    history.append({"role": "user", "parts": [{"text": req.message}]})
 
-    response = anthropic.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=system,
-        messages=history,
+    response = gemini.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=history,
+        config=types.GenerateContentConfig(system_instruction=system, max_output_tokens=1024),
     )
-    reply = response.content[0].text
-    history.append({"role": "assistant", "content": reply})
+    reply = response.text
+    history.append({"role": "model", "parts": [{"text": reply}]})
 
-    # keep history to last 20 turns
     if len(history) > 40:
         sessions[req.session_id] = history[-40:]
 
