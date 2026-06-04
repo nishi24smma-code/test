@@ -11,13 +11,14 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-UPLOAD_DIR = Path("uploads")
-DB_DIR = Path("db")
+BASE_DIR = Path(__file__).parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+DB_DIR = BASE_DIR / "db"
 UPLOAD_DIR.mkdir(exist_ok=True)
 DB_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="Book Chat")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 chroma = chromadb.PersistentClient(path=str(DB_DIR))
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
@@ -92,7 +93,7 @@ class BookMeta(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return (Path("static/index.html")).read_text()
+    return (BASE_DIR / "static/index.html").read_text()
 
 
 @app.post("/upload")
