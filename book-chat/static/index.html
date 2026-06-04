@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Book Chat — 本と対話する</title>
+<style>
+  :root {
+    --bg: #f7f4ef;
+    --surface: #fff;
+    --border: #ddd;
+    --accent: #4a6fa5;
+    --accent2: #6b8cba;
+    --text: #2c2c2c;
+    --muted: #777;
+    --user-bubble: #e8f0fb;
+    --ai-bubble: #f0f0f0;
+    --danger: #c0392b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+
+  header { background: var(--accent); color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 1.2rem; font-weight: 600; }
+  header .subtitle { font-size: 0.8rem; opacity: .7; }
+
+  .layout { display: flex; flex: 1; overflow: hidden; }
+
+  /* Sidebar */
+  .sidebar { width: 280px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .sidebar-header { padding: 14px 16px; font-weight: 600; font-size: .85rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--border); }
+  .upload-area { padding: 16px; border-bottom: 1px solid var(--border); }
+  .drop-zone { border: 2px dashed var(--border); border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; transition: border-color .2s; font-size: .85rem; color: var(--muted); }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); color: var(--accent); }
+  .drop-zone input { display: none; }
+  .upload-progress { display: none; margin-top: 8px; font-size: .8rem; color: var(--accent); }
+  .book-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .book-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; transition: background .15s; display: flex; flex-direction: column; gap: 2px; }
+  .book-item:hover { background: #f0f4fb; }
+  .book-item.active { background: #e8f0fb; }
+  .book-name { font-size: .9rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .book-pages { font-size: .75rem; color: var(--muted); }
+
+  /* Main */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .book-header { padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+  .book-header input { flex: 1; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: .9rem; }
+  .book-header input:focus { outline: none; border-color: var(--accent); }
+
+  .mode-tabs { display: flex; gap: 6px; }
+  .mode-tab { padding: 5px 12px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-size: .8rem; transition: all .15s; }
+  .mode-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .chat-area { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .welcome { text-align: center; color: var(--muted); margin: auto; max-width: 320px; }
+  .welcome h2 { font-size: 1.1rem; margin-bottom: 8px; }
+  .welcome p { font-size: .85rem; line-height: 1.6; }
+
+  .bubble { max-width: 80%; padding: 10px 14px; border-radius: 12px; line-height: 1.6; font-size: .9rem; white-space: pre-wrap; }
+  .bubble.user { background: var(--user-bubble); align-self: flex-end; border-bottom-right-radius: 4px; }
+  .bubble.ai { background: var(--ai-bubble); align-self: flex-start; border-bottom-left-radius: 4px; }
+  .bubble .mode-badge { display: inline-block; font-size: .7rem; padding: 1px 6px; border-radius: 10px; margin-bottom: 4px; background: var(--accent); color: #fff; }
+
+  .input-area { padding: 12px 16px; background: var(--surface); border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
+  .input-area textarea { flex: 1; resize: none; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: .9rem; font-family: inherit; max-height: 120px; line-height: 1.5; }
+  .input-area textarea:focus { outline: none; border-color: var(--accent); }
+  .btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: .9rem; transition: opacity .15s; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent2); }
+  .btn-summary { background: #e8f4e8; color: #2d6a2d; border: 1px solid #a8d5a8; }
+  .btn-summary:hover:not(:disabled) { background: #d0e8d0; }
+
+  .typing { display: none; align-self: flex-start; padding: 10px 14px; background: var(--ai-bubble); border-radius: 12px; }
+  .typing span { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce .9s infinite; margin: 0 2px; }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-6px)} }
+
+  .empty-state { text-align: center; color: var(--muted); padding: 20px; font-size: .85rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>📚 Book Chat</h1>
+    <div class="subtitle">PDFをアップロードして本と対話しよう</div>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-header">ライブラリ</div>
+
+    <div class="upload-area">
+      <div class="drop-zone" id="dropZone">
+        <input type="file" id="fileInput" accept=".pdf">
+        <div>📄 PDFをドロップ<br>またはクリックして選択</div>
+      </div>
+      <div class="upload-progress" id="uploadProgress">⏳ 読み込み中...</div>
+    </div>
+
+    <div class="book-list" id="bookList">
+      <div class="empty-state">書籍がありません</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="book-header" id="bookHeader" style="display:none">
+      <div style="display:flex;flex-direction:column;gap:4px;flex:1">
+        <input id="titleInput" placeholder="タイトル" />
+        <input id="authorInput" placeholder="著者名（任意・著者モード用）" />
+      </div>
+      <div class="mode-tabs">
+        <button class="mode-tab active" data-mode="discuss">💬 議論</button>
+        <button class="mode-tab" data-mode="author">✍️ 著者</button>
+      </div>
+      <button class="btn btn-summary" id="summaryBtn">📝 要約</button>
+    </div>
+
+    <div class="chat-area" id="chatArea">
+      <div class="welcome">
+        <h2>📖 本と対話しよう</h2>
+        <p>左のサイドバーからPDFをアップロードしてください。<br>本の内容について質問したり、著者として議論したりできます。</p>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <textarea id="msgInput" placeholder="メッセージを入力... (Shift+Enterで改行)" rows="1" disabled></textarea>
+      <button class="btn btn-primary" id="sendBtn" disabled>送信</button>
+    </div>
+  </main>
+</div>
+
+<script>
+const state = {
+  books: {},
+  currentBookId: null,
+  sessionId: crypto.randomUUID(),
+  mode: 'discuss',
+  loading: false,
+};
+
+// ── Upload ────────────────────────────────────────────────────────────────
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const uploadProgress = document.getElementById('uploadProgress');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+
+async function uploadFile(file) {
+  if (!file.name.endsWith('.pdf')) { alert('PDFファイルのみ対応しています'); return; }
+  uploadProgress.style.display = 'block';
+  uploadProgress.textContent = '⏳ 読み込み中...';
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch('/upload', { method: 'POST', body: fd });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || '失敗'); }
+    const data = await res.json();
+    state.books[data.book_id] = { title: data.title, pages: data.pages, author_hint: '' };
+    renderBookList();
+    selectBook(data.book_id);
+    uploadProgress.textContent = `✅ ${data.pages}ページ読み込み完了`;
+    setTimeout(() => { uploadProgress.style.display = 'none'; }, 2000);
+  } catch (e) {
+    uploadProgress.textContent = `❌ ${e.message}`;
+  }
+}
+
+// ── Book list ─────────────────────────────────────────────────────────────
+
+function renderBookList() {
+  const list = document.getElementById('bookList');
+  const entries = Object.entries(state.books);
+  if (!entries.length) { list.innerHTML = '<div class="empty-state">書籍がありません</div>'; return; }
+  list.innerHTML = entries.map(([id, b]) => `
+    <div class="book-item ${id === state.currentBookId ? 'active' : ''}" onclick="selectBook('${id}')">
+      <div class="book-name" title="${b.title}">${b.title}</div>
+      <div class="book-pages">${b.pages}ページ</div>
+    </div>`).join('');
+}
+
+function selectBook(bookId) {
+  if (state.currentBookId !== bookId) {
+    state.currentBookId = bookId;
+    state.sessionId = crypto.randomUUID(); // reset conversation
+    clearChat();
+  }
+  renderBookList();
+  const meta = state.books[bookId];
+  document.getElementById('bookHeader').style.display = 'flex';
+  document.getElementById('titleInput').value = meta.title;
+  document.getElementById('authorInput').value = meta.author_hint || '';
+  document.getElementById('msgInput').disabled = false;
+  document.getElementById('sendBtn').disabled = false;
+}
+
+// sync meta on blur
+['titleInput', 'authorInput'].forEach(id => {
+  document.getElementById(id).addEventListener('blur', saveMeta);
+});
+
+async function saveMeta() {
+  if (!state.currentBookId) return;
+  const title = document.getElementById('titleInput').value.trim();
+  const author = document.getElementById('authorInput').value.trim();
+  state.books[state.currentBookId].title = title;
+  state.books[state.currentBookId].author_hint = author;
+  renderBookList();
+  await fetch('/meta', { method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ book_id: state.currentBookId, title, author_hint: author }) });
+}
+
+// ── Mode tabs ─────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.mode-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    state.mode = tab.dataset.mode;
+  });
+});
+
+// ── Chat ──────────────────────────────────────────────────────────────────
+
+const chatArea = document.getElementById('chatArea');
+const msgInput = document.getElementById('msgInput');
+const sendBtn = document.getElementById('sendBtn');
+
+msgInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+msgInput.addEventListener('input', () => {
+  msgInput.style.height = 'auto';
+  msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + 'px';
+});
+sendBtn.addEventListener('click', sendMessage);
+document.getElementById('summaryBtn').addEventListener('click', () => sendMessage('summary'));
+
+function clearChat() {
+  chatArea.innerHTML = '';
+}
+
+function appendBubble(role, text, mode) {
+  // remove welcome screen
+  const welcome = chatArea.querySelector('.welcome');
+  if (welcome) welcome.remove();
+
+  const div = document.createElement('div');
+  div.className = `bubble ${role}`;
+  if (role === 'ai' && mode) {
+    const badge = { discuss: '💬 議論', author: '✍️ 著者', summary: '📝 要約' }[mode] || mode;
+    div.innerHTML = `<span class="mode-badge">${badge}</span>\n${escHtml(text)}`;
+  } else {
+    div.textContent = text;
+  }
+  chatArea.appendChild(div);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  return div;
+}
+
+function showTyping() {
+  const div = document.createElement('div');
+  div.className = 'typing';
+  div.id = 'typingIndicator';
+  div.innerHTML = '<span></span><span></span><span></span>';
+  chatArea.appendChild(div);
+  div.style.display = 'flex';
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function hideTyping() {
+  document.getElementById('typingIndicator')?.remove();
+}
+
+async function sendMessage(forceMode) {
+  if (state.loading || !state.currentBookId) return;
+  const mode = forceMode || state.mode;
+  let text = forceMode === 'summary' ? '要約してください' : msgInput.value.trim();
+  if (!text) return;
+
+  appendBubble('user', forceMode === 'summary' ? '📝 要約をリクエスト' : text);
+  msgInput.value = '';
+  msgInput.style.height = 'auto';
+
+  state.loading = true;
+  sendBtn.disabled = true;
+  showTyping();
+
+  try {
+    await saveMeta();
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ session_id: state.sessionId, book_id: state.currentBookId, message: text, mode }),
+    });
+    const data = await res.json();
+    hideTyping();
+    appendBubble('ai', data.reply, data.mode);
+  } catch (e) {
+    hideTyping();
+    appendBubble('ai', '⚠️ エラーが発生しました: ' + e.message, mode);
+  } finally {
+    state.loading = false;
+    sendBtn.disabled = false;
+  }
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+}
+</script>
+</body>
+</html>
