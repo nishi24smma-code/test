@@ -21,7 +21,7 @@ app = FastAPI(title="Book Chat")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-pro"
 
 sessions: dict[str, list[dict]] = {}
 books: dict[str, dict] = {}
